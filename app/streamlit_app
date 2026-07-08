@@ -1,0 +1,270 @@
+import streamlit as st
+import pandas as pd
+import os
+
+st.set_page_config(
+    page_title="SoloBob Supply Chain Copilot",
+    page_icon="🤖",
+    layout="wide"
+)
+
+# Snowflake connection
+conn = st.connection("snowflake", ttl=os.getenv("SNOWFLAKE_CONNECTION_TTL"))
+session = conn.session()
+
+session.sql("USE ROLE ACCOUNTADMIN").collect()
+session.sql("USE WAREHOUSE SOLOBOB_WH").collect()
+session.sql("USE DATABASE SOLOBOB_DB").collect()
+session.sql("USE SCHEMA SUPPLY_CHAIN").collect()
+
+def query_df(sql: str) -> pd.DataFrame:
+    return session.sql(sql).to_pandas()
+
+st.title("🤖 SoloBob Supply Chain Copilot")
+
+st.markdown(
+    """
+    **SoloBob Supply Chain Copilot** is a domain-specific AI decision-support system 
+    that helps supply chain managers detect inventory risks, understand operational causes, 
+    and generate actionable replenishment recommendations using Snowflake.
+    """
+)
+
+st.info(
+    "Built for the Snowflake CoCo CLI Hackathon under the Domain-Specific AI Copilot track. "
+    "The system demonstrates an end-to-end workflow from enterprise data analysis to risk detection, "
+    "manager recommendations, alerts, and action logging."
+)
+
+st.subheader("🚀 End-to-End Copilot Workflow")
+workflow_col1, workflow_col2 = st.columns([1, 2])
+
+with workflow_col1:
+    if st.button("Run SoloBob Copilot", use_container_width=True):
+        result = query_df("CALL RUN_SOLOBOB_COPILOT()")
+        st.success(result.iloc[0, 0])
+
+with workflow_col2:
+    st.markdown(
+        """
+        When executed, this workflow will:
+        1. Refresh recommended actions  
+        2. Generate urgent inventory alerts  
+        3. Store workflow run history  
+        4. Prepare manager-level decision outputs  
+        """
+    )
+
+st.divider()
+
+dashboard_df = query_df("SELECT * FROM COPILOT_DASHBOARD")
+brief_df = query_df("SELECT * FROM MANAGER_BRIEF")
+summary_df = query_df("SELECT * FROM EXECUTIVE_SUMMARY")
+alerts_df = query_df("SELECT * FROM COPILOT_ALERTS ORDER BY CREATED_AT DESC")
+action_log_df = query_df("SELECT * FROM COPILOT_ACTION_LOG ORDER BY CREATED_AT DESC")
+run_log_df = query_df("SELECT * FROM COPILOT_RUN_LOG ORDER BY RUN_TIME DESC")
+questions_df = query_df("SELECT * FROM COPILOT_DEMO_QUESTIONS ORDER BY QUESTION_ID")
+
+st.subheader("📊 Supply Chain Risk Overview")
+
+if not brief_df.empty:
+    brief = brief_df.iloc[0]
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    kpi1.metric("Products Monitored", int(brief["TOTAL_PRODUCTS_MONITORED"]))
+    kpi2.metric("High Risk", int(brief["HIGH_RISK_PRODUCTS"]))
+    kpi3.metric("Medium Risk", int(brief["MEDIUM_RISK_PRODUCTS"]))
+    kpi4.metric("Low Risk", int(brief["LOW_RISK_PRODUCTS"]))
+    kpi5.metric("Urgent Reorder Qty", int(brief["TOTAL_URGENT_REORDER_QTY"]))
+
+st.subheader("🧠 Manager Brief")
+if not summary_df.empty:
+    st.success(summary_df.iloc[0]["SUMMARY_TEXT"])
+else:
+    st.warning("No manager brief available yet.")
+
+st.divider()
+
+st.subheader("📈 Visual Risk Snapshot")
+chart_col1, chart_col2 = st.columns(2)
+
+with chart_col1:
+    st.markdown("#### Risk Level Distribution")
+    if not dashboard_df.empty:
+        risk_counts = dashboard_df["RISK_LEVEL"].value_counts().reset_index()
+        risk_counts.columns = ["RISK_LEVEL", "COUNT"]
+        st.bar_chart(risk_counts, x="RISK_LEVEL", y="COUNT")
+    else:
+        st.info("No risk data available.")
+
+with chart_col2:
+    st.markdown("#### Recommended Order Quantity")
+    if not dashboard_df.empty:
+        order_chart = dashboard_df[["PRODUCT_NAME", "RECOMMENDED_ORDER_QTY"]].sort_values("RECOMMENDED_ORDER_QTY", ascending=False)
+        st.bar_chart(order_chart, x="PRODUCT_NAME", y="RECOMMENDED_ORDER_QTY")
+    else:
+        st.info("No order recommendation data available.")
+
+st.divider()
+
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "Risk Dashboard",
+    "Recommended Actions",
+    "Critical Alerts",
+    "Supplier Concerns",
+    "Workflow Logs",
+    "Demo Questions"
+])
+
+with tab1:
+    st.subheader("⚠️ Inventory Risk Dashboard")
+    if not dashboard_df.empty:
+        risk_filter = st.multiselect(
+            "Filter by risk level",
+            options=sorted(dashboard_df["RISK_LEVEL"].dropna().unique().tolist()),
+            default=sorted(dashboard_df["RISK_LEVEL"].dropna().unique().tolist())
+        )
+        filtered_df = dashboard_df[dashboard_df["RISK_LEVEL"].isin(risk_filter)]
+        st.dataframe(
+            filtered_df[[
+                "PRODUCT_NAME", "CATEGORY", "CURRENT_STOCK", "SAFETY_STOCK", "REORDER_POINT",
+                "TOTAL_SOLD_LAST_MONTH", "AVG_WEEKLY_SALES", "SUPPLIER_NAME", "RELIABILITY_SCORE",
+                "DELAYED_DELIVERIES", "AVG_DELAY_DAYS", "RISK_LEVEL", "RISK_REASON"
+            ]],
+            use_container_width=True
+        )
+    else:
+        st.info("No dashboard data available.")
+
+with tab2:
+    st.subheader("✅ Recommended Manager Actions")
+    if not dashboard_df.empty:
+        urgent_df = dashboard_df[dashboard_df["ACTION_PRIORITY"] == "URGENT"]
+        review_df = dashboard_df[dashboard_df["ACTION_PRIORITY"] == "REVIEW SOON"]
+        monitor_df = dashboard_df[dashboard_df["ACTION_PRIORITY"] == "MONITOR"]
+
+        st.markdown("### Urgent Actions")
+        if not urgent_df.empty:
+            for _, row in urgent_df.iterrows():
+                st.error(
+                    f"**{row['PRODUCT_NAME']}** needs urgent action. "
+                    f"Recommended order quantity: **{int(row['RECOMMENDED_ORDER_QTY'])} units**. "
+                    f"{row['RECOMMENDED_ACTION']}"
+                )
+        else:
+            st.success("No urgent actions required.")
+
+        st.markdown("### Review Soon")
+        if not review_df.empty:
+            st.dataframe(
+                review_df[["PRODUCT_NAME", "CURRENT_STOCK", "REORDER_POINT", "AVG_WEEKLY_SALES", "RECOMMENDED_ORDER_QTY", "RECOMMENDED_ACTION"]],
+                use_container_width=True
+            )
+        else:
+            st.info("No review-soon actions.")
+
+        st.markdown("### Monitor")
+        if not monitor_df.empty:
+            st.dataframe(
+                monitor_df[["PRODUCT_NAME", "CURRENT_STOCK", "REORDER_POINT", "RECOMMENDED_ACTION"]],
+                use_container_width=True
+            )
+
+        st.markdown("### Pending Action Log")
+        if not action_log_df.empty:
+            st.dataframe(
+                action_log_df[["PRODUCT_NAME", "ACTION_PRIORITY", "RECOMMENDED_ORDER_QTY", "RECOMMENDED_ACTION", "STATUS", "CREATED_AT"]],
+                use_container_width=True
+            )
+        else:
+            st.info("No pending actions yet. Run the workflow first.")
+    else:
+        st.info("No recommendation data available.")
+
+with tab3:
+    st.subheader("🚨 Critical Alerts")
+    if not alerts_df.empty:
+        for _, row in alerts_df.iterrows():
+            st.error(
+                f"**{row['PRODUCT_NAME']}** — {row['SEVERITY']}\n\n"
+                f"{row['ALERT_MESSAGE']}\n\n"
+                f"Created at: {row['CREATED_AT']}"
+            )
+    else:
+        st.success("No critical alerts generated yet.")
+
+with tab4:
+    st.subheader("🏭 Supplier Concern Analysis")
+    if not dashboard_df.empty:
+        supplier_df = dashboard_df[[
+            "SUPPLIER_NAME", "PRODUCT_NAME", "RELIABILITY_SCORE", "DELAYED_DELIVERIES", "AVG_DELAY_DAYS", "RISK_LEVEL", "ACTION_PRIORITY"
+        ]].sort_values(by=["RELIABILITY_SCORE", "AVG_DELAY_DAYS"], ascending=[True, False])
+        st.dataframe(supplier_df, use_container_width=True)
+        weakest_supplier = supplier_df.iloc[0]
+        st.warning(
+            f"Highest supplier concern: **{weakest_supplier['SUPPLIER_NAME']}** "
+            f"supplying **{weakest_supplier['PRODUCT_NAME']}**. "
+            f"Reliability score: **{weakest_supplier['RELIABILITY_SCORE']}**, "
+            f"average delay: **{weakest_supplier['AVG_DELAY_DAYS']} days**."
+        )
+    else:
+        st.info("No supplier data available.")
+
+with tab5:
+    st.subheader("🧾 Workflow Run Logs")
+    if not run_log_df.empty:
+        st.dataframe(
+            run_log_df[["RUN_ID", "RUN_TIME", "TOTAL_PRODUCTS_MONITORED", "HIGH_RISK_PRODUCTS", "MEDIUM_RISK_PRODUCTS", "LOW_RISK_PRODUCTS", "URGENT_PRODUCTS", "REVIEW_SOON_PRODUCTS", "SUMMARY_TEXT"]],
+            use_container_width=True
+        )
+    else:
+        st.info("No workflow run logs yet. Click 'Run SoloBob Copilot' first.")
+
+with tab6:
+    st.subheader("💬 Suggested CoCo Demo Questions")
+    st.markdown("Use these questions during the demo to show natural language interaction with Snowflake CoCo / Cortex Code.")
+    if not questions_df.empty:
+        for _, row in questions_df.iterrows():
+            st.markdown(f"**Q{row['QUESTION_ID']}. {row['USER_QUESTION']}**")
+            st.caption(row["EXPECTED_COPILOT_ACTION"])
+    else:
+        st.info("No demo questions available.")
+
+st.divider()
+
+st.subheader("🧠 Agent Skills & Workflow Design")
+skills_df = query_df("SELECT * FROM COPILOT_AGENT_SKILLS ORDER BY SKILL_ID")
+workflow_steps_df = query_df("SELECT * FROM COPILOT_WORKFLOW_STEPS ORDER BY STEP_ID")
+
+skill_tab1, skill_tab2 = st.tabs(["Agent Skills", "Workflow Steps"])
+
+with skill_tab1:
+    st.markdown(
+        """
+        SoloBob Copilot is designed as a modular domain-specific AI workflow. 
+        Instead of relying on one generic prompt, the system separates reasoning into specialized supply chain skills.
+        """
+    )
+    for _, row in skills_df.iterrows():
+        with st.expander(f"{row['SKILL_ID']}. {row['SKILL_NAME']}"):
+            st.markdown(f"**Role:** {row['SKILL_ROLE']}")
+            st.markdown(f"**Input Data:** {row['INPUT_DATA']}")
+            st.markdown(f"**Core Logic:** {row['CORE_LOGIC']}")
+            st.markdown(f"**Output:** {row['OUTPUT_RESULT']}")
+            st.markdown(f"**Business Value:** {row['BUSINESS_VALUE']}")
+
+with skill_tab2:
+    st.markdown("The workflow moves from raw enterprise data to risk reasoning, action generation, alert creation, and manager decision support.")
+    st.dataframe(workflow_steps_df, use_container_width=True)
+
+st.divider()
+
+st.markdown(
+    """
+    ### 🧩 Solution Architecture
+
+    **Enterprise Data → Risk Analysis → Action Recommendation → Alert Generation → Manager Brief → Workflow Log**
+
+    This application demonstrates how Snowflake can support a domain-specific AI copilot that moves users 
+    from data exploration to business decision-making in a single integrated workflow.
+    """
+)
